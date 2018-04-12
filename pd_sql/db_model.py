@@ -207,7 +207,7 @@ class MySqlModel(object):
 
     to_sql = upsert
 
-    def upserts(self, df_dict: dict, n_workers=2, **kwargs):
+    def upserts(self, df_dict: dict, n_workers=8, **kwargs):
         """
         upsert concurrently
         :param df_dict: dict(table_name: df)
@@ -229,7 +229,7 @@ class MySqlModel(object):
 
         for job in to_do:
             try:
-                _ = job.get(0xfffffff)
+                _ = job.get(0xffff)
             except KeyboardInterrupt:
                 'Job canceled...'
                 pool.join()
