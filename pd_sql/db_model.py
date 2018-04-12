@@ -1,0 +1,183 @@
+#! /usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+
+@version: 0.1
+@author:  quantpy
+@file:    db_model.py
+@time:    2018/4/12 10:34
+"""
+
+from functools import wraps, partial
+import MySQLdb
+from warnings import filterwarnings, resetwarnings
+from hashlib import sha224
+from random import random
+from time import time
+import pandas as pd
+
+from sqlalchemy import create_engine
+
+
+def select(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        self = args[0]
+        sql = func(*args, **kwargs)
+        df = self.read_sql(sql)
+        for k, s in df.iteritems():
+            k_ = k.lower()
+            if k_.endswith(('_date', '_time')):
+                df.loc[:, k] = pd.to_datetime(s, errors='coerce')
+        return df
+    return wrapper
+
+
+def bound_method_to_function(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+    return wrapper
+
+
+class MySqlModel(object):
+    def __init__(self, *args, warning=True, **kwargs):
+        if not warning:
+            filterwarnings('ignore', category=MySQLdb.Warning)
+            self.__warning = False
+        else:
+            self.__warning = True
+
+        try:
+            self.engine = create_engine(*args, **kwargs)
+        except TypeError:
+            print('You should specify connection name_or_url, you can set it later')
+            self.engine = None
+
+        pd.DataFrame.upsert = bound_method_to_function(self.upsert)
+
+    @property
+    def warning(self): return self.__warning
+
+    @warning.setter
+    def warning(self, v):
+        if v:
+            self.__warning = True
+            resetwarnings()
+        else:
+            self.__warning = False
+            filterwarnings('ignore', category=MySQLdb.Warning)
+
+    def read_sql(self, sql, *args, **kwargs):
+        return pd.read_sql(sql, self.engine, *args, **kwargs).rename(columns=str.lower)
+
+    def execute(self, sql, connect=None, **kwargs):
+        if not connect:
+            connect = self.engine.connect(**kwargs)
+        connect.execute(sql)
+        return connect
+
+    def truncate(self, table_name):
+        sql = f'TRUNCATE {table_name}'
+        self.execute(sql).close()
+
+    @select
+    def get_table_columns(self, table_name): return f'SHOW FULL COLUMNS FROM {table_name}'
+
+    @select
+    def get_table_data(self, table_name, fields, where=None):
+        table_columns = self.get_table_columns(table_name)
+        table_columns = list(table_columns['field'].apply(str.lower))
+        try:
+            fields = fields.split(',')
+        except AttributeError:
+            pass
+        fields = [field.strip().lower() for field in fields if field.split()[0].lower() in table_columns]
+        fields = ', '.join(fields)
+        fields = fields or '*'
+
+        sql = f'SELECT {fields} FROM {table_name}'
+        sql = sql + f' WHERE {where}' if where else sql
+
+        return sql
+
+    def upsert(self, df: pd.DataFrame, table_name, con=None, keep_temp=True, by_temporary=False, postfix='_',
+               mode='update', null='new', auto_increment=False, **kwargs
+               ):
+        if not df.shape[0]:
+            return
+        if keep_temp:
+            by_temporary = False
+        if con:
+            self.engine = con
+
+        table_type = 'TEMPORARY TABLE' if by_temporary else 'TABLE'
+        kwargs.update(if_exists='append', index=False)
+
+        # specify temp table name
+        postfix = postfix.replace(' ', '').strip()
+        if postfix and (not by_temporary):
+            pass
+        else:
+            postfix = pd.datetime.now().strftime('%Y%m%d%H%M%S_') + sha224(
+                (str(time()) + str(random())).encode('utf8')).hexdigest()
+        table_name_temp = f"{table_name}_{postfix}"[:60]
+
+        sql_drop = f'DROP {table_type} IF EXISTS {table_name_temp}'
+
+        df_columns = self.get_table_columns(table_name)
+        df_columns = df_columns[df_columns['field'].apply(str.lower).isin(df.columns)]
+        df = df.loc[:, list(df_columns['field'])]  # filter
+        columns_type = dict(df_columns.set_index('field')['type'])
+
+        # make create table sql
+        columns_str = ',\n'.join(["`{}` {} DEFAULT NULL".format(col, typ) for col, typ in columns_type.items()])
+        engine = kwargs.pop('engine', 'MyISAM')
+        if (not by_temporary) and (engine.upper() == 'HEAP'):
+            engine = 'MyISAM'
+        charset = kwargs.pop('charset', 'utf8')
+        sql_create = f'CREATE {table_type} `{table_name_temp}` ({columns_str}) ' \
+                     f'ENGINE={engine}, DEFAULT CHARSET={charset}'
+
+        # make insert sql
+        cols = df.columns
+        cols_select = ', '.join(['`{}`'.format(col) for col in cols])
+        mode = mode.lower()
+        if mode == 'update':
+            null = null.lower()
+            if null == 'force':
+                fmt = '`{col}`=VALUES(`{col}`)'
+            elif null == 'new':
+                fmt = '`{col}`=COALESCE(VALUES(`{col}`), `{table_name}`.`{col}`)'
+            elif null == 'old':
+                fmt = '`{col}`=COALESCE(`{table_name}`.`{col}`, VALUES(`{col}`))'
+            else:
+                raise ValueError('Invalid update_null value, must be one of `force`, `new` or `old`')
+            cols_update = ', '.join(fmt.format(col=col, table_name=table_name) for col in cols)
+            sql_into = f'INSERT INTO {table_name}({cols_select}) SELECT {cols_select} FROM {table_name_temp} ' \
+                       f'ON DUPLICATE KEY UPDATE {cols_update}'
+
+        elif mode == 'ignore':
+            sql_into = f'INSERT IGNORE INTO `{table_name}`({cols_select}) SELECT {cols_select} FROM `{table_name_temp}`'
+        elif mode == 'replace':
+            sql_into = f'REPLACE INTO `{table_name}`({cols_select}) SELECT {cols_select} FROM `{table_name_temp}`'
+        else:
+            raise NotImplementedError
+
+        try:
+            connect = self.execute(sql_drop)  # drop old temp table
+            connect = self.execute(sql_create, connect)  # create temp table
+            df.to_sql(table_name_temp, connect, **kwargs)  # insert data into temp table
+            if auto_increment:
+                connect.execute(f'ALTER TABLE {table_name} AUTO_INCREMENT = 1')
+            connect.execute(sql_into)  # insert data from temp table to target table
+        except Exception as e:
+            print(repr(e))
+        else:
+            connect.close()
+        finally:
+            if not keep_temp:
+                self.execute(sql_drop).close()  # delete temp table
+
+    to_sql = upsert
+
