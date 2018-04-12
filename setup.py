@@ -17,7 +17,7 @@ except ImportError:
 
 setup(
     name='pandas-sql',
-    version='0.1',
+    version='0.1.1',
     description='pandas to_sql by update, ignore or replace',
     url='https://github.com/xbanke/pandas-sql',
     author='quantpy',
