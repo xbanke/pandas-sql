@@ -7,8 +7,8 @@
 @file:    db_model.py
 @time:    2018/4/12 10:34
 """
-
-from functools import wraps, partial
+import os
+from functools import wraps
 import MySQLdb
 from warnings import filterwarnings, resetwarnings
 from hashlib import sha224
@@ -17,6 +17,7 @@ from time import time
 import pandas as pd
 
 from sqlalchemy import create_engine
+from multiprocessing.pool import ThreadPool as Pool
 
 
 def select(func):
@@ -86,6 +87,13 @@ class MySqlModel(object):
 
     @select
     def get_table_data(self, table_name, fields, where=None):
+        """
+        read data from given table
+        :param table_name:  source table name
+        :param fields:  columns
+        :param where:  some where conditions
+        :return: pandas.DataFrame
+        """
         table_columns = self.get_table_columns(table_name)
         table_columns = list(table_columns['field'].apply(str.lower))
         try:
@@ -104,6 +112,24 @@ class MySqlModel(object):
     def upsert(self, df: pd.DataFrame, table_name, con=None, keep_temp=True, by_temporary=False, postfix='_',
                mode='update', null='new', auto_increment=False, **kwargs
                ):
+        """
+
+        :param df: data to write
+        :param table_name:  target table name
+        :param con: db engine
+        :param keep_temp: whether keep the temp table if not by_temporary
+        :param by_temporary: whether create temp table by with temporary table
+        :param postfix:  temp table name postfix
+        :param mode:  how to write data, update, ignore or replace
+        :param null:  how to deal null data, only when mode = 'update'. force, new or old,
+                force: force update or data;
+                new: if new data is not null then update
+                old: if new data is null the update
+        :param auto_increment:  whether reset the auto_increment
+        :param kwargs: other key word args from pd.DataFrame.to_sql
+        :return:
+        """
+
         if not df.shape[0]:
             return
         if keep_temp:
@@ -180,4 +206,32 @@ class MySqlModel(object):
                 self.execute(sql_drop).close()  # delete temp table
 
     to_sql = upsert
+
+    def upserts(self, df_dict: dict, n_workers=2, **kwargs):
+        """
+        upsert concurrently
+        :param df_dict: dict(table_name: df)
+        :param n_workers: num of threads
+        :param kwargs: kwargs from upsert
+        :return:
+        """
+        if len(df_dict) == 1:
+            table_name, df = df_dict.popitem()
+            return self.upsert(df, table_name, **kwargs)
+
+        def func(df_, table_name_):
+            return self.upsert(df_, table_name_, **kwargs)
+
+        n_workers = min(self.engine.pool.size(), n_workers, len(df_dict))
+        pool = Pool(n_workers)
+        to_do = [pool.apply_async(func, (df_, table_name_)) for table_name_, df_ in df_dict.items()]
+        pool.close()
+
+        for job in to_do:
+            try:
+                _ = job.get(0xfffffff)
+            except KeyboardInterrupt:
+                'Job canceled...'
+                pool.join()
+        pool.join()
 
