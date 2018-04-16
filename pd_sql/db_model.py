@@ -9,7 +9,7 @@
 """
 import os
 from functools import wraps
-import MySQLdb
+import pymysql
 from warnings import filterwarnings, resetwarnings
 from hashlib import sha224
 from random import random
@@ -44,7 +44,7 @@ def bound_method_to_function(func):
 class MySqlModel(object):
     def __init__(self, *args, warning=True, **kwargs):
         if not warning:
-            filterwarnings('ignore', category=MySQLdb.Warning)
+            filterwarnings('ignore', category=pymysql.Warning)
             self.__warning = False
         else:
             self.__warning = True
@@ -67,7 +67,7 @@ class MySqlModel(object):
             resetwarnings()
         else:
             self.__warning = False
-            filterwarnings('ignore', category=MySQLdb.Warning)
+            filterwarnings('ignore', category=pymysql.Warning)
 
     def read_sql(self, sql, *args, **kwargs):
         return pd.read_sql(sql, self.engine, *args, **kwargs).rename(columns=str.lower)
@@ -124,7 +124,7 @@ class MySqlModel(object):
         :param null:  how to deal null data, only when mode = 'update'. force, new or old,
                 force: force update or data;
                 new: if new data is not null then update
-                old: if new data is null the update
+                old: if old data is not null then update
         :param auto_increment:  whether reset the auto_increment
         :param kwargs: other key word args from pd.DataFrame.to_sql
         :return:

@@ -15,9 +15,12 @@ except ImportError:
     from distutils.core import setup
 
 
+from pd_sql import __version__
+
+
 setup(
     name='pandas-sql',
-    version='0.1.2',
+    version=__version__,
     description='pandas to_sql by update, ignore or replace',
     url='https://github.com/xbanke/pandas-sql',
     author='quantpy',
