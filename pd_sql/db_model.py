@@ -7,9 +7,12 @@
 @file:    db_model.py
 @time:    2018/4/12 10:34
 """
-import os
 from functools import wraps
-import pymysql
+try:
+    from pymysql import Warning
+except ImportError:
+    from MySQLdb import Warning
+
 from warnings import filterwarnings, resetwarnings
 from hashlib import sha224
 from random import random
@@ -44,7 +47,7 @@ def bound_method_to_function(func):
 class MySqlModel(object):
     def __init__(self, *args, warning=True, **kwargs):
         if not warning:
-            filterwarnings('ignore', category=pymysql.Warning)
+            filterwarnings('ignore', category=Warning)
             self.__warning = False
         else:
             self.__warning = True
@@ -67,7 +70,7 @@ class MySqlModel(object):
             resetwarnings()
         else:
             self.__warning = False
-            filterwarnings('ignore', category=pymysql.Warning)
+            filterwarnings('ignore', category=Warning)
 
     def read_sql(self, sql, *args, **kwargs):
         return pd.read_sql(sql, self.engine, *args, **kwargs).rename(columns=str.lower)
