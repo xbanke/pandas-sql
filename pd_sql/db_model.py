@@ -8,12 +8,6 @@
 @time:    2018/4/12 10:34
 """
 from functools import wraps
-try:
-    from pymysql import Warning
-except ImportError:
-    from MySQLdb import Warning
-
-from warnings import filterwarnings, resetwarnings
 from hashlib import sha224
 from random import random
 from time import time
@@ -45,12 +39,7 @@ def bound_method_to_function(func):
 
 
 class MySqlModel(object):
-    def __init__(self, *args, warning=True, **kwargs):
-        if not warning:
-            filterwarnings('ignore', category=Warning)
-            self.__warning = False
-        else:
-            self.__warning = True
+    def __init__(self, *args, **kwargs):
 
         try:
             self.engine = create_engine(*args, **kwargs)
@@ -59,18 +48,6 @@ class MySqlModel(object):
             self.engine = None
 
         pd.DataFrame.upsert = bound_method_to_function(self.upsert)
-
-    @property
-    def warning(self): return self.__warning
-
-    @warning.setter
-    def warning(self, v):
-        if v:
-            self.__warning = True
-            resetwarnings()
-        else:
-            self.__warning = False
-            filterwarnings('ignore', category=Warning)
 
     def read_sql(self, sql, *args, **kwargs):
         return pd.read_sql(sql, self.engine, *args, **kwargs).rename(columns=str.lower)
