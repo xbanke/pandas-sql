@@ -7,6 +7,7 @@
 @file:    db_model.py
 @time:    2018/4/12 10:34
 """
+import abc
 from functools import wraps
 from hashlib import sha224
 from random import random
@@ -31,23 +32,20 @@ def select(func):
     return wrapper
 
 
-def bound_method_to_function(func):
+def method_to_function(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         return func(*args, **kwargs)
     return wrapper
 
 
-class MySqlModel(object):
+class Model(metaclass=abc.ABCMeta):
     def __init__(self, *args, **kwargs):
-
         try:
             self.engine = create_engine(*args, **kwargs)
         except TypeError:
             print('You should specify connection name_or_url, you can set it later')
             self.engine = None
-
-        pd.DataFrame.upsert = bound_method_to_function(self.upsert)
 
     def read_sql(self, sql, *args, **kwargs):
         return pd.read_sql(sql, self.engine, *args, **kwargs).rename(columns=str.lower)
@@ -62,8 +60,9 @@ class MySqlModel(object):
         sql = f'TRUNCATE {table_name}'
         self.execute(sql).close()
 
-    @select
-    def get_table_columns(self, table_name): return f'SHOW FULL COLUMNS FROM {table_name}'
+    @abc.abstractmethod
+    def get_table_columns(self, table_name):
+        pass
 
     @select
     def get_table_data(self, table_name, fields, where=None):
@@ -88,6 +87,16 @@ class MySqlModel(object):
         sql = sql + f' WHERE {where}' if where else sql
 
         return sql
+
+
+class MySqlModel(Model):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        pd.DataFrame.upsert = method_to_function(self.upsert)
+
+    @select
+    def get_table_columns(self, table_name): return f'SHOW FULL COLUMNS FROM {table_name}'
 
     def upsert(self, df: pd.DataFrame, table_name, con=None, keep_temp=True, by_temporary=False, postfix='_',
                mode='update', null='new', auto_increment=False, **kwargs
@@ -214,4 +223,12 @@ class MySqlModel(object):
                 'Job canceled...'
                 pool.join()
         pool.join()
+
+
+class MsSqlModel(Model):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def get_table_columns(self, table_name):
+        return self.read_sql(f'sp_columns {table_name}').rename(columns={'column_name': 'field'})
 
