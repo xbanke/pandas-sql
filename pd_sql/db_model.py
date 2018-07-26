@@ -158,9 +158,9 @@ class MySqlModel(Model):
         # if postfix and (not by_temporary):
         #     pass
         if not postfix:
-            postfix = pd.datetime.now().strftime('%Y%m%d%H%M%S_') + sha224(
+            postfix = pd.datetime.now().strftime('%Y%m%d%H%M%S%f_') + sha224(
                 (str(time()) + str(random())).encode('utf8')).hexdigest()
-        table_name_temp = f"{table_name}_{postfix}"[:60]
+        table_name_temp = f"{table_name}_{postfix}"[:64]
 
         sql_drop = f'DROP {table_type} IF EXISTS {table_name_temp}'
 
