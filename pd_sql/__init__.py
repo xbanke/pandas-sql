@@ -12,4 +12,4 @@
 from .db_model import MySqlModel, MsSqlModel
 
 
-__version__ = '0.1.7'
+__version__ = '0.1.8'

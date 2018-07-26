@@ -15,6 +15,8 @@ from time import time
 import pandas as pd
 
 from sqlalchemy import create_engine
+from sqlalchemy import exc
+from sqlalchemy.orm import Session
 from multiprocessing.pool import ThreadPool as Pool
 
 
@@ -39,6 +41,26 @@ def method_to_function(func):
     return wrapper
 
 
+def to_sql(df: pd.DataFrame, *args, **kwargs):
+    chunksize = kwargs.pop('chunksize', None)
+    if chunksize is None:
+        chunksize = df.shape[0]
+    while chunksize >= 1:
+        try:
+            df.to_sql(*args, chunksize=chunksize, **kwargs)
+        except exc.OperationalError as e:
+            if e.orig.args[0] == 2006:
+                chunksize = chunksize // 2 + 1
+                continue
+        else:
+            break
+    else:
+        raise e
+
+
+pd.DataFrame.to_sql_ = to_sql
+
+
 class Model(metaclass=abc.ABCMeta):
     def __init__(self, *args, **kwargs):
         try:
@@ -51,14 +73,15 @@ class Model(metaclass=abc.ABCMeta):
         return pd.read_sql(sql, self.engine, *args, **kwargs).rename(columns=str.lower)
 
     def execute(self, sql, connect=None, **kwargs):
-        if not connect:
-            connect = self.engine.connect(**kwargs)
-        connect.execute(sql)
-        return connect
+        if connect is None:
+            with self.engine.connect(**kwargs) as connect:
+                connect.execute(sql)
+        else:
+            connect.execute(sql)
 
     def truncate(self, table_name):
         sql = f'TRUNCATE {table_name}'
-        self.execute(sql).close()
+        self.execute(sql)
 
     @abc.abstractmethod
     def get_table_columns(self, table_name):
@@ -98,7 +121,7 @@ class MySqlModel(Model):
     @select
     def get_table_columns(self, table_name): return f'SHOW FULL COLUMNS FROM {table_name}'
 
-    def upsert(self, df: pd.DataFrame, table_name, con=None, keep_temp=True, by_temporary=False, postfix='_',
+    def upsert(self, df: pd.DataFrame, table_name, con=None, keep_temp=False, by_temporary=False, postfix=None,
                mode='update', null='new', auto_increment=False, **kwargs
                ):
         """
@@ -130,10 +153,11 @@ class MySqlModel(Model):
         kwargs.update(if_exists='append', index=False)
 
         # specify temp table name
-        postfix = postfix.replace(' ', '').strip()
-        if postfix and (not by_temporary):
-            pass
-        else:
+        if postfix is not None:
+            postfix = str(postfix).replace(' ', '').strip()
+        # if postfix and (not by_temporary):
+        #     pass
+        if not postfix:
             postfix = pd.datetime.now().strftime('%Y%m%d%H%M%S_') + sha224(
                 (str(time()) + str(random())).encode('utf8')).hexdigest()
         table_name_temp = f"{table_name}_{postfix}"[:60]
@@ -179,20 +203,21 @@ class MySqlModel(Model):
         else:
             raise NotImplementedError
 
+        session = Session(bind=self.engine)
         try:
-            connect = self.execute(sql_drop)  # drop old temp table
-            connect = self.execute(sql_create, connect)  # create temp table
-            df.to_sql(table_name_temp, connect, **kwargs)  # insert data into temp table
-            if auto_increment:
-                connect.execute(f'ALTER TABLE {table_name} AUTO_INCREMENT = 1')
-            connect.execute(sql_into)  # insert data from temp table to target table
+            with session.begin(subtransactions=True):
+                session.execute(sql_drop)
+                session.execute(sql_create)
+                df.to_sql_(table_name_temp, self.engine, **kwargs)
+                if auto_increment:
+                    session.execute(f'ALTER TABLE {table_name} AUTO_INCREMENT = 1')
+                session.execute(sql_into)
+                if not keep_temp:
+                    session.execute(sql_drop)
         except Exception as e:
-            print(repr(e))
-        else:
-            connect.close()
+            raise e
         finally:
-            if not keep_temp:
-                self.execute(sql_drop).close()  # delete temp table
+            session.close()
 
     to_sql = upsert
 
