@@ -16,7 +16,6 @@ import pandas as pd
 
 from sqlalchemy import create_engine
 from sqlalchemy import exc
-from sqlalchemy.orm import Session
 from multiprocessing.pool import ThreadPool as Pool
 
 
@@ -121,7 +120,7 @@ class MySqlModel(Model):
     @select
     def get_table_columns(self, table_name): return f'SHOW FULL COLUMNS FROM {table_name}'
 
-    def upsert(self, df: pd.DataFrame, table_name, con=None, keep_temp=False, by_temporary=False, postfix=None,
+    def upsert(self, df: pd.DataFrame, table_name, con=None, keep_temp=False, by_temporary=True, postfix=None,
                mode='update', null='new', auto_increment=False, **kwargs
                ):
         """
@@ -203,21 +202,23 @@ class MySqlModel(Model):
         else:
             raise NotImplementedError
 
-        session = Session(bind=self.engine)
+        # session = Session(bind=self.engine)
+        connect = self.engine.connect()
         try:
-            with session.begin(subtransactions=True):
-                session.execute(sql_drop)
-                session.execute(sql_create)
-                df.to_sql_(table_name_temp, self.engine, **kwargs)
+            with connect.begin_nested():
+                if not by_temporary:
+                    connect.execute(sql_drop)
+                connect.execute(sql_create)
+                df.to_sql_(table_name_temp, connect, **kwargs)
                 if auto_increment:
-                    session.execute(f'ALTER TABLE {table_name} AUTO_INCREMENT = 1')
-                session.execute(sql_into)
-                if not keep_temp:
-                    session.execute(sql_drop)
+                    connect.execute(f'ALTER TABLE {table_name} AUTO_INCREMENT = 1')
+                connect.execute(sql_into)
+                if (not keep_temp) or by_temporary:
+                    connect.execute(sql_drop)
         except Exception as e:
             raise e
         finally:
-            session.close()
+            connect.close()
 
     to_sql = upsert
 
